@@ -1,0 +1,265 @@
+
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+    <meta charset="UTF-8">
+    <title>Visualizador de Pontos</title>
+    <style>
+        body {
+            margin: 0;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            background: #f4f6f8;
+        }
+        header {
+            background: linear-gradient(90deg, #004aad, #1e6fd2);
+            color: white;
+            padding: 15px;
+            text-align: center;
+            font-size: 22px;
+            font-weight: bold;
+            box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        }
+        .content {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        #sidebar {
+            width: 320px;
+            padding: 15px;
+            overflow-y: auto;
+            background: #fff;
+            border-right: 1px solid #ddd;
+            box-shadow: 2px 0 5px rgba(0,0,0,0.05);
+            display: flex;
+            flex-direction: column;
+        }
+        #file-input-container {
+            display: flex;
+            flex-direction: column;
+            margin-bottom: 15px;
+        }
+        #file-input-container label {
+            font-weight: bold;
+            margin-bottom: 5px;
+            color: #333;
+        }
+        input[type="file"], input[type="text"] {
+            padding: 10px;
+            margin-bottom: 10px;
+            border-radius: 6px;
+            border: 1px solid #ccc;
+            font-size: 14px;
+            outline: none;
+            transition: all 0.2s;
+        }
+        input[type="file"]:hover, input[type="text"]:hover {
+            border-color: #1e6fd2;
+        }
+        #cdc-list {
+            list-style-type: none;
+            padding: 0;
+            margin: 0;
+            flex: 1;
+        }
+        #cdc-list li {
+            padding: 12px;
+            border-bottom: 1px solid #eee;
+            cursor: pointer;
+            border-radius: 6px;
+            transition: all 0.2s;
+            background: #f9f9f9;
+            margin-bottom: 6px;
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        }
+        #cdc-list li:hover {
+            background: #e6f0ff;
+            transform: translateY(-2px);
+            box-shadow: 0 3px 6px rgba(0,0,0,0.15);
+        }
+        .name {
+            font-weight: 600;
+            color: #004aad;
+        }
+        .coordinates {
+            font-size: 0.85em;
+            color: #555;
+        }
+        #map {
+            flex: 1;
+            background: #e0e0e0;
+        }
+        #loading {
+    display: none;   /* começa escondido */
+    position: absolute;
+    top: 0; left: 0;
+    width: 100%; height: 100%;
+    background: rgba(255,255,255,0.8);
+    z-index: 9999;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    font-weight: bold;
+    color: #004aad;
+    flex-direction: column;
+}
+</style>
+</head>
+<body>
+<header>Visualizador de Pontos</header>
+<div id="loading">
+    <div class="spinner"></div>
+    Carregando arquivo...
+</div>
+<div class="content">
+    <div id="sidebar">
+        <div id="file-input-container">
+            <label for="file-input">Selecione arquivos KML/KMZ:</label>
+            <input type="file" id="file-input" accept=".kml,.kmz" multiple>
+            <input type="text" id="search" placeholder="Pesquisar ponto...">
+        </div>
+        <ul id="cdc-list"></ul>
+    </div>
+    <div id="map"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jszip/3.7.1/jszip.min.js"></script>
+<script>
+    let allFeatures = [];
+    const fileInput = document.getElementById('file-input');
+    const searchInput = document.getElementById('search');
+    const listContainer = document.getElementById('cdc-list');
+    const loadingOverlay = document.getElementById('loading');
+
+    fileInput.addEventListener('change', async (evt) => {
+        const files = evt.target.files;
+        if (files.length === 0) return;
+
+        allFeatures = [];
+        listContainer.innerHTML = '';
+
+        // Mostra carregando
+        loadingOverlay.style.display = 'flex';
+
+        try {
+            const readers = [];
+            for (const file of files) {
+                const ext = file.name.split('.').pop().toLowerCase();
+                if (ext === 'kmz') readers.push(readKMZ(file));
+                else if (ext === 'kml') readers.push(readKML(file));
+            }
+
+            const newFeatures = (await Promise.all(readers)).flat();
+            allFeatures = newFeatures;
+            renderList(allFeatures);
+
+            if (allFeatures.length === 0) alert("Nenhum ponto válido foi encontrado.");
+        } catch (err) {
+            alert("Erro ao carregar o arquivo: " + err.message);
+        } finally {
+            // Esconde carregando
+            loadingOverlay.style.display = 'none';
+        }
+    });
+
+    searchInput.addEventListener('input', () => {
+        const term = searchInput.value.toLowerCase();
+        renderList(allFeatures.filter(f => (f.name || '').toLowerCase().includes(term)));
+    });
+
+    function readKML(file) {
+        return new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = e => resolve(parseKML(e.target.result));
+            reader.onerror = reject;
+            reader.readAsText(file);
+        });
+    }
+
+    async function readKMZ(file) {
+        const zip = await JSZip.loadAsync(file);
+        const kmlFile = zip.file(/.kml$/i)[0];
+        if(kmlFile){
+            const kmlText = await kmlFile.async("text");
+            return parseKML(kmlText);
+        }
+        return [];
+    }
+
+    function parseKML(kmlText){
+        const parser = new DOMParser();
+        const xmlDoc = parser.parseFromString(kmlText,"text/xml");
+        const placemarks = xmlDoc.getElementsByTagName("Placemark");
+        const features = [];
+        for(const placemark of placemarks){
+            const nameTag = placemark.getElementsByTagName("name")[0];
+            const coordinatesTag = placemark.getElementsByTagName("coordinates")[0];
+            if(nameTag && coordinatesTag){
+                const coords = coordinatesTag.textContent.trim().split(',');
+                const lon = parseFloat(coords[0]);
+                const lat = parseFloat(coords[1]);
+                if(!isNaN(lat) && !isNaN(lon)) features.push({name:nameTag.textContent, lat, lon});
+            }
+        }
+        return features;
+    }
+
+    function openInMaps(lat, lon){
+        const url = `https://www.google.com/maps/search/?api=1&query=${lat},${lon}`;
+        window.open(url,'_blank');
+    }
+
+    function tryFallbackCopy(text) {
+        const textArea = document.createElement("textarea");
+        textArea.value = text;
+        textArea.style.position = "fixed";
+        textArea.style.top = "0";
+        textArea.style.left = "0";
+        textArea.style.opacity = "0";
+        document.body.appendChild(textArea);
+        textArea.focus();
+        textArea.select();
+
+        try {
+            document.execCommand('copy');
+            alert("Coordenadas copiadas! Cole no seu app de mapas.");
+        } catch (err) {
+            alert("Não foi possível copiar automaticamente. As coordenadas são: " + text);
+        } finally {
+            document.body.removeChild(textArea);
+        }
+    }
+
+    function copyToClipboard(text){
+        if (navigator.clipboard && window.isSecureContext) {
+            navigator.clipboard.writeText(text).then(() => {
+                alert("Coordenadas copiadas! Cole no seu app de mapas.");
+            }).catch(() => {
+                tryFallbackCopy(text);
+            });
+        } else {
+            tryFallbackCopy(text);
+        }
+    }
+
+    function renderList(features){
+        listContainer.innerHTML='';
+        features.forEach((feature, index)=>{
+            const li = document.createElement('li');
+            li.innerHTML = `<span class="name">${feature.name || `Ponto ${index+1}`}</span><br><span class="coordinates">${feature.lat.toFixed(5)}, ${feature.lon.toFixed(5)}</span>`;
+            li.onclick = ()=>{
+                if(navigator.onLine){
+                    openInMaps(feature.lat, feature.lon);
+                } else {
+                    copyToClipboard(`${feature.lat},${feature.lon}`);
+                }
+            };
+            listContainer.appendChild(li);
+        });
+    }
+</script>
+</body>
+</html>
